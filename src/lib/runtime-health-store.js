@@ -14,6 +14,12 @@ function normalizeErrorMessage(message) {
   return trimmed ? trimmed.slice(0, 300) : null;
 }
 
+function sameContent(a, b) {
+  const { updatedAt: _a, ...restA } = a;
+  const { updatedAt: _b, ...restB } = b;
+  return JSON.stringify(restA) === JSON.stringify(restB);
+}
+
 export class RuntimeHealthStore {
   #accountsDir;
 
@@ -33,8 +39,14 @@ export class RuntimeHealthStore {
     await removeFileIfExists(this.#path(normalizedId));
   }
 
+  /**
+   * Merge `patch` into the account's runtime record and write it when anything
+   * other than `updatedAt` changed. `updatedAt` is the time of the last content
+   * change; an unchanged record is returned as stored, without a write.
+   */
   async upsert(normalizedId, patch = {}) {
-    const existing = (await this.load(normalizedId)) || {};
+    const stored = await this.load(normalizedId);
+    const existing = stored || {};
     const now = new Date().toISOString();
     const next = {
       normalizedAccountId: normalizedId,
@@ -58,6 +70,10 @@ export class RuntimeHealthStore {
         typeof patch.replyability === 'string' ? patch.replyability : existing.replyability || 'unknown',
       updatedAt: now,
     };
+
+    if (stored && sameContent(stored, next)) {
+      return stored;
+    }
 
     await writeJsonAtomic(this.#path(normalizedId), next, { mode: 0o600 });
     return next;

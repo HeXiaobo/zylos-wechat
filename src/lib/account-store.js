@@ -7,10 +7,25 @@
  * - sync state file: get_updates_buf (long-poll cursor)
  */
 
-import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const CONTEXT_TOKENS_FILE = 'context-tokens.json';
+
+// Temporary file left by an atomic JSON write: `<file>.json.<pid>.<epoch ms>.tmp`.
+const ATOMIC_TMP_RE = /^.+\.json\.(\d+)\.(\d+)\.tmp$/;
+// A write's temporary file lives for milliseconds; one this old is abandoned
+// even when its writer pid now belongs to another running process.
+const STALE_TMP_AGE_MS = 10 * 60_000;
+
+function processIsRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
 
 export class AccountStore {
   #dataDir;
@@ -26,6 +41,43 @@ export class AccountStore {
 
   async init() {
     await mkdir(this.#accountsDir, { recursive: true });
+  }
+
+  /**
+   * Remove temporary files that an atomic write in the accounts directory left
+   * behind when its process exited mid-write. Only regular files named in this
+   * store's `<file>.json.<pid>.<epoch ms>.tmp` format are considered. One is
+   * removed when its writer process is no longer running, or when it is older
+   * than STALE_TMP_AGE_MS. Other files are never touched.
+   * @returns {Promise<string[]>} names of removed files
+   */
+  async removeStaleTempFiles() {
+    let names;
+    try {
+      names = await readdir(this.#accountsDir);
+    } catch {
+      return [];
+    }
+
+    const removed = [];
+    for (const name of names) {
+      const match = ATOMIC_TMP_RE.exec(name);
+      if (!match) continue;
+
+      const path = join(this.#accountsDir, name);
+      try {
+        const st = await lstat(path);
+        if (!st.isFile()) continue;
+        const pid = Number(match[1]);
+        const writerGone = pid !== process.pid && !processIsRunning(pid);
+        if (!writerGone && Date.now() - st.mtimeMs < STALE_TMP_AGE_MS) continue;
+        await unlink(path);
+        removed.push(name);
+      } catch {
+        // vanished or not removable: leave it for the next start
+      }
+    }
+    return removed;
   }
 
   // --- Account Index ---
