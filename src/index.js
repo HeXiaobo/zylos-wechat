@@ -198,6 +198,10 @@ async function main() {
   });
 
   await manager.init();
+  const removedTempFiles = await manager.store.removeStaleTempFiles();
+  if (removedTempFiles.length > 0) {
+    logger.info(`removed ${removedTempFiles.length} stale temporary file(s) from accounts/`);
+  }
   await loginSessions.init();
 
   manager.on('error', (err, acctId, normalizedId) => {

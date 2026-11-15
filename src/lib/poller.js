@@ -116,6 +116,9 @@ export class Poller extends EventEmitter {
 
   async #pollLoop() {
     let buf = await this.#accountStore.loadSyncState(this.#normalizedId);
+    // Cursor currently on disk. getUpdates often returns the same cursor when
+    // nothing arrived; only a different cursor is written.
+    let savedBuf = buf;
 
     while (this.#running) {
       // Check session pause
@@ -154,7 +157,10 @@ export class Poller extends EventEmitter {
         // Update cursor
         if (response.get_updates_buf) {
           buf = response.get_updates_buf;
-          await this.#accountStore.saveSyncState(this.#normalizedId, buf);
+          if (buf !== savedBuf) {
+            await this.#accountStore.saveSyncState(this.#normalizedId, buf);
+            savedBuf = buf;
+          }
         }
 
         // Emit messages
