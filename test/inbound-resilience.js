@@ -12,7 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -231,6 +231,30 @@ test('syncAccountReplyability returns null without touching disk when no runtime
   assert.equal(await handler.syncAccountReplyability('missing-account', ACCOUNT_ID), null);
   assert.deepEqual(lines.warn, []);
   assert.deepEqual(readdirSync(dataDir), []);
+});
+
+test('a real filesystem fault on the state directory does not block delivery', async (t) => {
+  const dataDir = makeDataDir(t);
+  // Not a stub: a regular file where `accounts/` must be makes every write to
+  // runtime.json fail inside writeJsonAtomic for real.
+  writeFileSync(join(dataDir, 'accounts'), 'blocker\n');
+  const runtimeHealth = new RuntimeHealthStore(dataDir);
+  const { lines, logger } = captureLogger();
+  const sent = [];
+  const handler = makeHandler({ runtimeHealth, logger, sent });
+
+  await handler.handleMessages(
+    [textMessage('f-1', 'first'), textMessage('f-2', 'second')],
+    ACCOUNT_ID,
+    NORMALIZED_ID
+  );
+
+  assert.equal(sent.length, 2);
+  assert.equal(sent[0].content.includes('first'), true);
+  assert.equal(lines.warn.length, 2);
+  assert.match(lines.warn[0], /runtime health write skipped for acct-normalized/);
+  assert.match(lines.warn[0], /Error /);
+  assert.deepEqual(lines.error, []);
 });
 
 test('a non-allowlisted sender is dropped before delivery but the state write failure is contained', async (t) => {
